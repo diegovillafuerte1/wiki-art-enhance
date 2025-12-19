@@ -2,15 +2,12 @@
 // Heuristic parsing + Met Museum lookup + tooltip injection
 
 const CONTEXT_SCAN_LIMIT = 12000; // allow larger snippets for LLM
-const YEAR_PADDING = 20; // +/- years around found year for search range
-const MAX_RESULTS = 8; // limit number of artworks to fetch
+const TOOLTIP_RESULTS_LIMIT = 8; // per-provider fetch limit for tooltip
 const TOOLTIP_WIDTH = 280;
-const CACHE_TTL_MS = 5 * 60 * 1000;
 const HIDE_DELAY_MS = 200;
 
 const EXT = typeof browser !== "undefined" ? browser : chrome;
 const DEBUG = true;
-const metCache = new Map(); // key -> { ts, data, promise }
 
 function dbg(...args) {
   if (!DEBUG) return;
@@ -113,63 +110,24 @@ function dedupeCandidates(list) {
   return out;
 }
 
-async function fetchMetArtworks({ location, year }) {
-  dbg("fetch:start", { location, year });
-  const key = `${location || ""}|${year || ""}`;
-  const now = Date.now();
-  const cached = metCache.get(key);
-  if (cached && cached.data && cached.ts + CACHE_TTL_MS > now) {
-    dbg("fetch:cache-hit", { key, count: cached.data.length });
-    return cached.data;
+function fetchArtworks({ location, year }) {
+  const providers = window.WACProviders || {};
+  dbg("fetch:start", { location, year, providers: Object.keys(providers || {}) });
+  if (providers.fetchRelatedArtworks) {
+    return providers.fetchRelatedArtworks({
+      location,
+      year,
+      limitPerProvider: TOOLTIP_RESULTS_LIMIT
+    });
   }
-  if (cached && cached.promise) {
-    dbg("fetch:cache-promise", { key });
-    return cached.promise;
+  if (providers.fetchMetArtworks) {
+    return providers.fetchMetArtworks({
+      location,
+      year,
+      limit: TOOLTIP_RESULTS_LIMIT
+    });
   }
-
-  const promise = (async () => {
-    const dateBegin = year ? year - YEAR_PADDING : 0;
-    const dateEnd = year ? year + YEAR_PADDING : 2100;
-    const query = encodeURIComponent(location || "");
-    const searchUrl = `https://collectionapi.metmuseum.org/public/collection/v1/search?hasImages=true&q=${query}&dateBegin=${dateBegin}&dateEnd=${dateEnd}`;
-    const searchResp = await fetch(searchUrl);
-    if (!searchResp.ok) throw new Error("Met search failed");
-    const searchData = await searchResp.json();
-    const ids = (searchData.objectIDs || []).slice(0, MAX_RESULTS);
-    const results = [];
-    for (const id of ids) {
-      try {
-        const objResp = await fetch(`https://collectionapi.metmuseum.org/public/collection/v1/objects/${id}`);
-        if (!objResp.ok) continue;
-        const obj = await objResp.json();
-        if (!obj.primaryImageSmall) continue;
-        results.push({
-          id,
-          title: obj.title,
-          artist: obj.artistDisplayName,
-          date: obj.objectDate,
-          thumb: obj.primaryImageSmall,
-          full: obj.primaryImage
-        });
-      } catch (e) {
-        // ignore individual fetch errors
-      }
-    }
-    metCache.set(key, { ts: Date.now(), data: results });
-    return results;
-  })();
-
-  metCache.set(key, { promise });
-  try {
-    const data = await promise;
-    metCache.set(key, { ts: Date.now(), data });
-    dbg("fetch:done", { key, count: data.length });
-    return data;
-  } catch (err) {
-    dbg("fetch:error", err);
-    metCache.delete(key);
-    throw err;
-  }
+  return Promise.resolve([]);
 }
 
 function createTooltipShell() {
@@ -318,17 +276,21 @@ async function init() {
     let hideTimer = null;
     updateTooltipContent(tooltip, { state: "loading" });
 
-    fetchMetArtworks(candidate)
+    fetchArtworks(candidate)
       .then((artworks) => {
         dbg("candidate:artworks", candidate, artworks?.length);
         if (artworks && artworks.length > 0) {
           const [first] = artworks;
+          const captionBits = [
+            candidate.location
+              ? `${candidate.location}${candidate.year ? `, ${candidate.year}` : ""}`
+              : null,
+            first.location || first.source || null
+          ].filter(Boolean);
           updateTooltipContent(tooltip, {
             image: first.thumb,
             title: first.title || "Artwork",
-            caption: candidate.location
-              ? `${candidate.location}${candidate.year ? `, ${candidate.year}` : ""}`
-              : "Related art",
+            caption: captionBits.join(" • ") || "Related art",
             onShowMore: () => {
               const baseUrl = EXT && EXT.runtime && EXT.runtime.getURL ? EXT.runtime.getURL("gallery.html") : "gallery.html";
               const url = new URL(baseUrl, window.location.href);

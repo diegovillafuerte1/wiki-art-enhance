@@ -11,3 +11,7 @@
 - On page load the content script sends larger page text to the LLM to extract candidate (location, year) pairs; if the key is missing or the call fails, heuristics are used instead.
 - Ensure host permission to `https://api.openai.com/*` is granted when prompted.
 - LLM defaults to `gpt-4o-mini`; tokens are limited to reduce cost. Content includes top portions of the page—be mindful of privacy when enabling.
+
+## Europeana support
+- Add your Europeana API key via Options (stored locally). If you have a build step that injects env vars, you can also set `EUROPEANA_API_KEY` at build time.
+- Queries use the detected location/year and fetch image-only items from Europeana alongside Met results. When debugging, check the console for `[WAC][EU]` logs showing the request URL and result count.

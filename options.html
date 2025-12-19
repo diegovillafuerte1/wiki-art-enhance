@@ -56,13 +56,17 @@
     </style>
   </head>
   <body>
-    <h1>LLM Settings</h1>
+    <h1>API Keys</h1>
     <label for="apiKey">OpenAI API key</label>
     <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+
+    <label for="europeanaKey">Europeana API key</label>
+    <input id="europeanaKey" type="text" placeholder="Your Europeana API key" autocomplete="off" />
+
     <button id="saveBtn">Save</button>
     <div class="status" id="status"></div>
     <div class="note">
-      The key is stored locally via chrome.storage. Content is sent to OpenAI to extract location/year cues.
+      Keys are stored locally via chrome.storage. LLM usage still requires OpenAI; Europeana requests also accept an env value in <code>EUROPEANA_API_KEY</code> if you bundle it at build time.
     </div>
     <script src="options.js"></script>
   </body>

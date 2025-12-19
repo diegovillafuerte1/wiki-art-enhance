@@ -1,32 +1,40 @@
 const statusEl = document.getElementById("status");
 const apiKeyInput = document.getElementById("apiKey");
+const europeanaKeyInput = document.getElementById("europeanaKey");
 const saveBtn = document.getElementById("saveBtn");
 
 function setStatus(text) {
   statusEl.textContent = text || "";
 }
 
-function loadKey() {
-  chrome.storage.local.get(["openaiApiKey"], (res) => {
+function loadKeys() {
+  chrome.storage.local.get(["openaiApiKey", "europeanaApiKey"], (res) => {
     if (res.openaiApiKey) {
       apiKeyInput.value = res.openaiApiKey;
-      setStatus("Key loaded.");
     }
+    if (res.europeanaApiKey) {
+      europeanaKeyInput.value = res.europeanaApiKey;
+    }
+    if (res.openaiApiKey || res.europeanaApiKey) setStatus("Keys loaded.");
   });
 }
 
-function saveKey() {
-  const key = apiKeyInput.value.trim();
-  if (!key) {
-    setStatus("Enter a key.");
+function saveKeys() {
+  const openaiKey = apiKeyInput.value.trim();
+  const europeanaKey = europeanaKeyInput.value.trim();
+  if (!openaiKey && !europeanaKey) {
+    setStatus("Enter at least one key.");
     return;
   }
   setStatus("Saving...");
-  chrome.storage.local.set({ openaiApiKey: key }, () => {
+  const payload = {};
+  if (openaiKey) payload.openaiApiKey = openaiKey;
+  if (europeanaKey) payload.europeanaApiKey = europeanaKey;
+  chrome.storage.local.set(payload, () => {
     setStatus("Saved.");
   });
 }
 
-saveBtn.addEventListener("click", saveKey);
-document.addEventListener("DOMContentLoaded", loadKey);
+saveBtn.addEventListener("click", saveKeys);
+document.addEventListener("DOMContentLoaded", loadKeys);
 

@@ -29,6 +29,7 @@
   "host_permissions": [
     "https://*.wikipedia.org/*",
     "https://collectionapi.metmuseum.org/*",
+    "https://api.europeana.eu/*",
     "https://upload.wikimedia.org/*",
     "https://api.openai.com/*"
   ],
@@ -40,6 +41,7 @@
       "js": [
         "lib/browser-polyfill.js",
         "llmClient.js",
+        "dataProviders.js",
         "contentScript.js"
       ],
       "css": [
@@ -54,6 +56,7 @@
         "contentStyles.css",
         "gallery.html",
         "gallery.js",
+        "dataProviders.js",
         "icons/*"
       ],
       "matches": [
