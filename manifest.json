@@ -1,0 +1,65 @@
+{
+  "manifest_version": 3,
+  "name": "Wikipedia Art Companion",
+  "version": "0.1.0",
+  "description": "Show related artworks on Wikipedia pages based on location and time period.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "wikipedia-art-companion@example.com",
+      "strict_min_version": "128.0"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Wikipedia Art Companion",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://*.wikipedia.org/*",
+    "https://collectionapi.metmuseum.org/*",
+    "https://upload.wikimedia.org/*",
+    "https://api.openai.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.wikipedia.org/*"
+      ],
+      "js": [
+        "lib/browser-polyfill.js",
+        "llmClient.js",
+        "contentScript.js"
+      ],
+      "css": [
+        "contentStyles.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "contentStyles.css",
+        "gallery.html",
+        "gallery.js",
+        "icons/*"
+      ],
+      "matches": [
+        "https://*.wikipedia.org/*"
+      ]
+    }
+  ]
+}
+

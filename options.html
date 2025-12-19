@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wikipedia Art Companion - Options</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 640px;
+        margin: 32px auto;
+        padding: 0 16px;
+        color: #1a1a1a;
+      }
+      h1 {
+        font-size: 20px;
+        margin-bottom: 12px;
+      }
+      label {
+        display: block;
+        margin: 12px 0 6px;
+        font-weight: bold;
+      }
+      input[type="password"],
+      input[type="text"] {
+        width: 100%;
+        padding: 10px;
+        border-radius: 8px;
+        border: 1px solid #ccc;
+        font-size: 14px;
+      }
+      button {
+        margin-top: 14px;
+        padding: 10px 16px;
+        background: #1a73e8;
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button:disabled {
+        background: #ccc;
+        cursor: not-allowed;
+      }
+      .status {
+        margin-top: 10px;
+        font-size: 13px;
+        color: #155ec0;
+      }
+      .note {
+        margin-top: 16px;
+        font-size: 12px;
+        color: #444;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>LLM Settings</h1>
+    <label for="apiKey">OpenAI API key</label>
+    <input id="apiKey" type="password" placeholder="sk-..." autocomplete="off" />
+    <button id="saveBtn">Save</button>
+    <div class="status" id="status"></div>
+    <div class="note">
+      The key is stored locally via chrome.storage. Content is sent to OpenAI to extract location/year cues.
+    </div>
+    <script src="options.js"></script>
+  </body>
+</html>
+
