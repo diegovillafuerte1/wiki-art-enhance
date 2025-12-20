@@ -7,6 +7,18 @@
   z-index: 2147483647;
 }
 
+.wac-marker-loc {
+  background: rgba(255, 0, 0, 0.3);
+}
+
+.wac-marker-noart {
+  background: rgba(0, 112, 243, 0.25);
+}
+
+.wac-marker-art {
+  background: #fff3a3;
+}
+
 .wac-tooltip {
   position: absolute;
   background: #fff;

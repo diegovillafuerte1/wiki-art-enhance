@@ -21,11 +21,15 @@ function getParams() {
   const url = new URL(window.location.href);
   return {
     location: url.searchParams.get("location") || "",
-    year: url.searchParams.get("year") ? parseInt(url.searchParams.get("year"), 10) : null
+    startYear: url.searchParams.get("startYear") ? parseInt(url.searchParams.get("startYear"), 10) : null,
+    endYear: url.searchParams.get("endYear") ? parseInt(url.searchParams.get("endYear"), 10) : null
   };
 }
 
-function fetchArtworks({ location, year }) {
+function fetchArtworks({ location, startYear, endYear }) {
+  const year = startYear != null && endYear != null
+    ? Math.round((startYear + endYear) / 2)
+    : startYear ?? endYear ?? null;
   const providers = window.WACProviders || {};
   if (providers.fetchRelatedArtworks) {
     return providers.fetchRelatedArtworks({ location, year, limitPerProvider: MAX_RESULTS });
@@ -65,13 +69,13 @@ function renderGrid() {
   updateLoadMore();
 }
 
-async function load({ location, year }) {
+async function load({ location, startYear, endYear }) {
   const requestId = ++state.requestId;
   renderStatus("Loading...");
   state.items = [];
   state.visible = 0;
   try {
-    const items = await fetchArtworks({ location, year });
+    const items = await fetchArtworks({ location, startYear, endYear });
     if (requestId !== state.requestId) return; // stale response
     state.items = items;
     state.visible = Math.min(BATCH_SIZE, items.length);
@@ -101,16 +105,19 @@ function setupLoadMore() {
 }
 
 function setupControls() {
-  const { location, year } = getParams();
+  const { location, startYear, endYear } = getParams();
   const locInput = document.getElementById("locationInput");
-  const yearInput = document.getElementById("yearInput");
+  const startInput = document.getElementById("startYearInput");
+  const endInput = document.getElementById("endYearInput");
   if (location) locInput.value = location;
-  if (year) yearInput.value = year;
+  if (startYear != null) startInput.value = startYear;
+  if (endYear != null) endInput.value = endYear;
 
   const triggerLoad = () => {
     const nextLocation = locInput.value.trim();
-    const nextYear = yearInput.value ? parseInt(yearInput.value, 10) : null;
-    debouncedLoad({ location: nextLocation, year: nextYear });
+    const nextStart = startInput.value ? parseInt(startInput.value, 10) : null;
+    const nextEnd = endInput.value ? parseInt(endInput.value, 10) : null;
+    debouncedLoad({ location: nextLocation, startYear: nextStart, endYear: nextEnd });
   };
 
   document.getElementById("refreshBtn").addEventListener("click", triggerLoad);
@@ -120,6 +127,10 @@ document.addEventListener("DOMContentLoaded", () => {
   setupControls();
   setupLoadMore();
   const params = getParams();
-  debouncedLoad(params);
+  debouncedLoad({
+    location: params.location,
+    startYear: params.startYear,
+    endYear: params.endYear
+  });
 });
 

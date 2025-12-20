@@ -17,6 +17,32 @@ const ENV_EUROPEANA_API_KEY =
       ? process.env.EUROPEANA_API_KEY
       : null;
 
+function bgJson(url) {
+  return new Promise((resolve, reject) => {
+    if (!WAC_EXT?.runtime?.sendMessage) {
+      fetch(url)
+        .then((resp) => {
+          if (!resp.ok) throw new Error(`fetch failed: ${resp.status}`);
+          return resp.json();
+        })
+        .then(resolve)
+        .catch(reject);
+      return;
+    }
+    try {
+      WAC_EXT.runtime.sendMessage({ type: "bgFetch", url }, (resp) => {
+        if (resp?.ok && resp.json) {
+          resolve(resp.json);
+        } else {
+          reject(new Error(resp?.error || `bgFetch failed: ${resp?.status || "unknown"}`));
+        }
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
 let europeanaApiKeyPromise = null;
 
 function makeCacheKey({ location, year, limit }) {
@@ -121,16 +147,13 @@ async function fetchMetArtworks({ location, year, limit = PROVIDER_DEFAULT_LIMIT
     const dateEnd = year ? year + PROVIDER_YEAR_PADDING : 2100;
     const query = encodeURIComponent(location || "");
     const searchUrl = `https://collectionapi.metmuseum.org/public/collection/v1/search?hasImages=true&q=${query}&dateBegin=${dateBegin}&dateEnd=${dateEnd}`;
-    const searchResp = await fetch(searchUrl);
-    if (!searchResp.ok) throw new Error("Met search failed");
-    const searchData = await searchResp.json();
+    const searchData = await bgJson(searchUrl);
+    if (!searchData || !searchData.objectIDs) throw new Error("Met search failed");
     const ids = (searchData.objectIDs || []).slice(0, limit);
     const results = [];
     for (const id of ids) {
       try {
-        const objResp = await fetch(`https://collectionapi.metmuseum.org/public/collection/v1/objects/${id}`);
-        if (!objResp.ok) continue;
-        const obj = await objResp.json();
+        const obj = await bgJson(`https://collectionapi.metmuseum.org/public/collection/v1/objects/${id}`);
         const mapped = mapMetItem(obj);
         if (mapped) results.push(mapped);
       } catch (_) {
@@ -157,6 +180,9 @@ async function fetchEuropeanaArtworks({ location, year, limit = PROVIDER_DEFAULT
     if (PROVIDER_DEBUG) console.warn("[WAC][EU] Missing Europeana API key");
     return [];
   }
+  if (year == null) {
+    throw new Error("Europeana search requires a year");
+  }
 
   const key = makeCacheKey({ location, year, limit });
   const now = Date.now();
@@ -168,7 +194,11 @@ async function fetchEuropeanaArtworks({ location, year, limit = PROVIDER_DEFAULT
 
   const promise = (async () => {
     const cleanLocation = normalizeLocation(location);
-    const baseQuery = [cleanLocation, year ? String(year) : null].filter(Boolean).join(" ").trim() || "art";
+    const yearQuery = year != null
+      ? `YEAR:[${Math.max(0, year - PROVIDER_YEAR_PADDING)} TO ${year + PROVIDER_YEAR_PADDING}]`
+      : null;
+    if (!yearQuery) throw new Error("Europeana search requires a year");
+    const baseQuery = yearQuery;
 
     const buildUrl = ({ useSpatial, useYearFilters }) => {
       const url = new URL("https://api.europeana.eu/record/v2/search.json");
@@ -181,11 +211,8 @@ async function fetchEuropeanaArtworks({ location, year, limit = PROVIDER_DEFAULT
       if (useSpatial && cleanLocation && isLikelyPlace(cleanLocation)) {
         url.searchParams.append("qf", `spatial:${cleanLocation}`);
       }
-      if (useYearFilters && year) {
-        const start = Math.max(0, year - PROVIDER_YEAR_PADDING);
-        const end = year + PROVIDER_YEAR_PADDING;
-        url.searchParams.append("qf", `YEAR:[${start} TO ${end}]`);
-        url.searchParams.append("qf", `YEAR:${year}`); // direct year match to avoid gaps
+      if (useYearFilters && yearQuery) {
+        url.searchParams.append("qf", yearQuery);
       }
       return url.toString();
     };
@@ -199,9 +226,13 @@ async function fetchEuropeanaArtworks({ location, year, limit = PROVIDER_DEFAULT
     for (const attempt of attempts) {
       const finalUrl = buildUrl(attempt);
       if (PROVIDER_DEBUG) console.info("[WAC][EU] fetch", attempt.label, finalUrl);
-      const resp = await fetch(finalUrl);
-      if (!resp.ok) continue;
-      const data = await resp.json();
+      let data = null;
+      try {
+        data = await bgJson(finalUrl);
+      } catch (err) {
+        if (PROVIDER_DEBUG) console.warn("[WAC][EU] fetch error", attempt.label, err);
+        continue;
+      }
       const results = (data.items || [])
         .map(mapEuropeanaItem)
         .filter(Boolean);

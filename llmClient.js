@@ -9,10 +9,10 @@ function getStoredApiKey() {
   });
 }
 
-async function callLLM({ prompt, model = LLM_DEFAULT_MODEL }) {
-  const apiKey = await getStoredApiKey();
+async function callLLM({ prompt, model = LLM_DEFAULT_MODEL, apiKey: explicitKey } = {}) {
+  const apiKey = explicitKey || (await getStoredApiKey());
   if (!apiKey) {
-    throw new Error("Missing OpenAI API key");
+    return "";
   }
 
   const body = {

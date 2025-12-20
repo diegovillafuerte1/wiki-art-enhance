@@ -5,6 +5,39 @@ const CONTEXT_SCAN_LIMIT = 12000; // allow larger snippets for LLM
 const TOOLTIP_RESULTS_LIMIT = 8; // per-provider fetch limit for tooltip
 const TOOLTIP_WIDTH = 280;
 const HIDE_DELAY_MS = 200;
+const NLP_CHUNK_SIZE = 12000;
+const NLP_SCROLL_THRESHOLD = 0.5; // trigger next scan when within 50% of the current scanned end
+const renderedMarkers = new Set(); // track rendered (location + range) to avoid duplicate popups
+
+function canonicalLocation(loc) {
+  return (loc || "")
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toRangeFromYear(year) {
+  if (year == null) return null;
+  return { start: year, end: year };
+}
+
+function midYearFromRange(range) {
+  if (!range) return null;
+  const { start, end } = range;
+  if (start != null && end != null) return Math.round((start + end) / 2);
+  return start != null ? start : end != null ? end : null;
+}
+
+function formatRange(range) {
+  if (!range) return "";
+  const { start, end } = range;
+  if (start != null && end != null) {
+    if (start === end) return String(start);
+    return `${start}–${end}`;
+  }
+  return String(start ?? end ?? "");
+}
 
 const EXT = typeof browser !== "undefined" ? browser : chrome;
 const DEBUG = true;
@@ -68,6 +101,11 @@ function extractArticleContext() {
 }
 
 async function extractWithLLM() {
+  const apiKey = await getStoredApiKey().catch(() => null);
+  if (!apiKey) {
+    dbg("llm:skip-no-key");
+    return [];
+  }
   const bodyText = document.body.innerText.slice(0, CONTEXT_SCAN_LIMIT);
   const prompt = `
 Given the following Wikipedia text, list up to 5 (location, year) pairs that best describe places and times referenced. Prefer concrete places (city/country/venue/organization HQ) and specific years or decades if exact years missing.
@@ -78,7 +116,7 @@ Text:
 ${bodyText.slice(0, 5000)}
 `;
   try {
-    const raw = await callLLM({ prompt });
+    const raw = await callLLM({ prompt, apiKey });
     dbg("llm:raw", raw);
     const jsonMatch = raw.match(/\[.*\]/s);
     if (!jsonMatch) throw new Error("No JSON in response");
@@ -87,7 +125,7 @@ ${bodyText.slice(0, 5000)}
     const cleaned = parsed
       .map((item) => ({
         location: (item.location || "").toString().trim(),
-        year: item.year ? parseInt(item.year, 10) : null
+        dateRange: item.year ? toRangeFromYear(parseInt(item.year, 10)) : null
       }))
       .filter((i) => i.location);
     dbg("llm:cleaned", cleaned);
@@ -99,17 +137,26 @@ ${bodyText.slice(0, 5000)}
 }
 
 async function extractWithNLP() {
+  const res = await extractWithNLPRange(0, CONTEXT_SCAN_LIMIT);
+  dbg("nlp:sample", res.slice(0, 5));
+  return res;
+}
+
+async function extractWithNLPRange(offset, length) {
   if (!window.WACNlp || typeof window.WACNlp.extractCandidates !== "function") {
     return [];
   }
   try {
+    const text = document.body?.innerText || "";
     const candidates = window.WACNlp.extractCandidates({
-      text: document.body?.innerText?.slice(0, CONTEXT_SCAN_LIMIT)
+      text,
+      offset,
+      length
     });
-    dbg("nlp:candidates", candidates);
+    dbg("nlp:range", { offset, length, count: candidates?.length });
     return Array.isArray(candidates) ? candidates : [];
   } catch (e) {
-    dbg("nlp:error", e);
+    dbg("nlp:range-error", e);
     return [];
   }
 }
@@ -118,7 +165,10 @@ function dedupeCandidates(list) {
   const seen = new Set();
   const out = [];
   for (const item of list) {
-    const key = `${(item.location || "").toLowerCase()}|${item.year || ""}`;
+    const locKey = canonicalLocation(item.location);
+    if (!locKey) continue;
+    const rangeKey = item.dateRange ? `${item.dateRange.start || ""}-${item.dateRange.end || ""}` : "";
+    const key = `${locKey}|${rangeKey}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(item);
@@ -126,7 +176,13 @@ function dedupeCandidates(list) {
   return out;
 }
 
-function fetchArtworks({ location, year }) {
+function addNewCandidates(existing, incoming) {
+  const merged = dedupeCandidates([...existing, ...incoming].filter(Boolean));
+  return merged;
+}
+
+function fetchArtworks({ location, dateRange }) {
+  const year = midYearFromRange(dateRange);
   const providers = window.WACProviders || {};
   dbg("fetch:start", { location, year, providers: Object.keys(providers || {}) });
   if (providers.fetchRelatedArtworks) {
@@ -195,14 +251,26 @@ function updateTooltipContent(tooltip, payload) {
     onShowMore();
   };
 }
-function findAnchorElement({ location, year }) {
-  const candidates = Array.from(document.querySelectorAll("p, h1, h2, li"));
-  for (const el of candidates) {
-    const text = el.innerText;
-    if (location && text.includes(location)) return el;
-    if (year && text.includes(String(year))) return el;
+function elementHasDateRange(elText, range) {
+  if (!range) return false;
+  const { start, end } = range;
+  const numbers = (elText.match(/\d{3,4}/g) || []).map((n) => parseInt(n, 10));
+  if (numbers.some((n) => n >= (start ?? n) && n <= (end ?? n))) return true;
+  // Allow century phrases without explicit digits
+  if (/\bcentur(?:y|ies)\b/i.test(elText)) return true;
+  return false;
+}
+
+function findAnchors({ location, dateRange }) {
+  const locKey = canonicalLocation(location);
+  const els = Array.from(document.querySelectorAll("p, h1, h2, li"));
+  if (dateRange) {
+    return els.filter((el) => {
+      const txtKey = canonicalLocation(el.innerText);
+      return txtKey.includes(locKey) && elementHasDateRange(el.innerText, dateRange);
+    });
   }
-  return document.querySelector("p") || document.body;
+  return els.filter((el) => canonicalLocation(el.innerText).includes(locKey));
 }
 
 function wrapFirstMatch(node, needle) {
@@ -260,103 +328,236 @@ async function init() {
   // Cleanup any prior injected markers/tooltips to avoid leftovers
   document.querySelectorAll(".wac-marker, .wac-tooltip").forEach((el) => el.remove());
 
-  const heuristic = extractArticleContext();
-  const nlpCandidates = await extractWithNLP();
-  dbg("init:context", heuristic);
+  /*
+    Old algorithm (LLM + heuristic + lazy scan) is disabled per request to implement a new
+    deterministic marking pass (red: location, blue: location+date, yellow: location+date+art).
+  */
 
-  let candidates = [];
-  try {
-    const llmCandidates = await extractWithLLM();
-    candidates = dedupeCandidates(
-      [
-        ...llmCandidates,
-        ...nlpCandidates,
-        heuristic
-      ].filter(Boolean)
-    );
-  } catch (e) {
-    dbg("init:llm-error", e);
-    candidates = dedupeCandidates(
-      [
-        ...nlpCandidates,
-        heuristic
-      ].filter(Boolean)
-    );
+  const paragraphs = [];
+  let consumed = 0;
+  for (const p of Array.from(document.querySelectorAll("p"))) {
+    const text = p.innerText || "";
+    if (consumed >= CONTEXT_SCAN_LIMIT) break;
+    paragraphs.push(p);
+    consumed += text.length;
   }
 
-  // filter out empties
-  candidates = candidates.filter((c) => c && (c.location || c.year));
-  if (candidates.length === 0) return;
-  dbg("init:candidates", candidates);
+  const pendingFetch = [];
 
-  for (const candidate of candidates) {
-    const anchor = findAnchorElement(candidate);
-    dbg("init:anchor", candidate, anchor?.tagName);
-    const marker = createMarker(candidate.location || "Art", anchor);
-    if (!marker) {
-      dbg("marker:skip-no-match", candidate);
-      continue;
+  dbg("debug:paragraph-count", paragraphs.length);
+
+  const detectRange = (text) => {
+    // year range 1900-1933
+    const range = text.match(/(1[0-9]{3}|20[0-9]{2})\s*[-–]\s*(1[0-9]{3}|20[0-9]{2})/);
+    if (range) return { start: parseInt(range[1], 10), end: parseInt(range[2], 10) };
+    const single = text.match(/(1[0-9]{3}|20[0-9]{2})/);
+    if (single) {
+      const y = parseInt(single[1], 10);
+      return { start: y, end: y };
     }
-    const tooltip = createTooltipShell();
-    let hideTimer = null;
-    updateTooltipContent(tooltip, { state: "loading" });
+    const century = text.match(/\b(\d{1,2})(st|nd|rd|th)?\s+centur(?:y|ies)\b/i);
+    if (century) {
+      const c = parseInt(century[1], 10);
+      const base = (c - 1) * 100;
+      return { start: base, end: base + 99 };
+    }
+    return null;
+  };
 
-    fetchArtworks(candidate)
-      .then((artworks) => {
-        dbg("candidate:artworks", candidate, artworks?.length);
-        if (artworks && artworks.length > 0) {
-          const [first] = artworks;
-          const captionBits = [
-            candidate.location
-              ? `${candidate.location}${candidate.year ? `, ${candidate.year}` : ""}`
-              : null,
-            first.location || first.source || null
-          ].filter(Boolean);
-          updateTooltipContent(tooltip, {
-            image: first.thumb,
-            title: first.title || "Artwork",
-            caption: captionBits.join(" • ") || "Related art",
-            onShowMore: () => {
-              const baseUrl = EXT && EXT.runtime && EXT.runtime.getURL ? EXT.runtime.getURL("gallery.html") : "gallery.html";
-              const url = new URL(baseUrl, window.location.href);
-              if (candidate.location) url.searchParams.set("location", candidate.location);
-              if (candidate.year) url.searchParams.set("year", String(candidate.year));
-              window.open(url.toString(), "_blank");
-            }
-          });
-        } else {
-          updateTooltipContent(tooltip, { state: "error" });
-        }
-      })
-      .catch((err) => {
-        dbg("candidate:fetch-error", err);
-        updateTooltipContent(tooltip, { state: "error" });
-      });
-
-    const show = () => {
-      if (hideTimer) {
-        clearTimeout(hideTimer);
-        hideTimer = null;
-      }
-      dbg("marker:hover", candidate);
-      positionTooltip(marker, tooltip);
-      tooltip.classList.add("wac-visible");
-    };
-
-    const hide = () => {
-      hideTimer = setTimeout(() => {
-        tooltip.classList.remove("wac-visible");
-        hideTimer = null;
-      }, HIDE_DELAY_MS);
-    };
-
-    marker.addEventListener("mouseenter", show);
-    marker.addEventListener("mouseleave", hide);
-    tooltip.addEventListener("mouseenter", show);
-    tooltip.addEventListener("mouseleave", hide);
+function wrapAtIndex(anchor, start, length) {
+  const walker = document.createTreeWalker(anchor, NodeFilter.SHOW_TEXT, null);
+  let offset = 0;
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const end = offset + node.data.length;
+    if (start >= offset && start < end) {
+      const localStart = start - offset;
+      const localEnd = localStart + length;
+      const before = node.data.slice(0, localStart);
+      const mid = node.data.slice(localStart, localEnd);
+      const after = node.data.slice(localEnd);
+      const mark = document.createElement("mark");
+      mark.className = "wac-marker";
+      mark.textContent = mid;
+      const frag = document.createDocumentFragment();
+      if (before) frag.appendChild(document.createTextNode(before));
+      frag.appendChild(mark);
+      if (after) frag.appendChild(document.createTextNode(after));
+      node.parentNode.replaceChild(frag, node);
+      return mark;
+    }
+    offset = end;
   }
+  return null;
 }
 
+  paragraphs.forEach((p) => {
+    const text = p.innerText || "";
+    const locs = nlp(text).places().out("array");
+    dbg("debug:places", { text: text.slice(0, 80) + (text.length > 80 ? "..." : ""), locs });
+    // Build positions map to avoid reusing the same occurrence
+    const lower = text.toLowerCase();
+    const positionsByLoc = new Map();
+    locs.forEach((raw) => {
+      const key = canonicalLocation(raw);
+      if (!key) return;
+      const arr = positionsByLoc.get(key) || [];
+      positionsByLoc.set(key, arr);
+    });
+    positionsByLoc.forEach((arr, key) => {
+      let from = 0;
+      while (from < lower.length) {
+        const pos = lower.indexOf(key, from);
+        if (pos === -1) break;
+        arr.push(pos);
+        from = pos + key.length;
+      }
+    });
+
+    positionsByLoc.forEach((positions, key) => {
+      positions.forEach((startPos) => {
+        const range = detectRange(text.slice(0, startPos));
+        const marker = wrapAtIndex(p, startPos, key.length);
+        if (!marker) return;
+        marker.dataset.wacKey = `${key}-${range ? `${range.start}-${range.end}` : "noloc"}`;
+        marker.classList.add("wac-marker-loc"); // red by default
+        if (range) {
+          marker.classList.remove("wac-marker-loc");
+          marker.classList.add("wac-marker-noart"); // blue
+          pendingFetch.push({ marker, location: key, dateRange: range });
+        }
+      });
+    });
+  });
+
+  pendingFetch.forEach((item) => {
+    fetchArtworks({ location: item.location, dateRange: item.dateRange })
+      .then((arts) => {
+        if (arts && arts.length > 0) {
+          item.marker.classList.remove("wac-marker-noart");
+          item.marker.classList.add("wac-marker-art"); // yellow
+        }
+      })
+      .catch(() => {
+        // leave as blue on error
+      });
+  });
+}
+
+function renderCandidates(candidates) {
+  const anchorLocSeen = new Set();
+  for (const candidate of candidates) {
+    if (!candidate.location) {
+      dbg("marker:skip-no-location", candidate);
+      continue;
+    }
+    const locKey = canonicalLocation(candidate.location);
+    if (!locKey) {
+      dbg("marker:skip-bad-location", candidate);
+      continue;
+    }
+    const rangeKey = candidate.dateRange ? `${candidate.dateRange.start || ""}-${candidate.dateRange.end || ""}` : "";
+    const dedupeKey = `${locKey}|${rangeKey}`;
+    const esc = typeof CSS !== "undefined" && CSS.escape ? CSS.escape(dedupeKey) : dedupeKey.replace(/"/g, '\\"');
+    dbg("marker:render", { dedupeKey, locKey, rangeKey, raw: candidate });
+    const anchors = findAnchors(candidate);
+    if (!anchors || anchors.length === 0) {
+      dbg("marker:skip-no-anchor", candidate);
+      continue;
+    }
+    anchors.forEach((anchor, idx) => {
+      dbg("init:anchor", { idx, candidate, anchorTag: anchor?.tagName });
+      const anchorLocKey = `${anchor.dataset.wacAnchorKey || ""}|${locKey}|${rangeKey}|${idx}`;
+      const existingMark = anchor.querySelector(`mark.wac-marker[data-wac-key="${esc}"]`);
+      if (existingMark || anchorLocSeen.has(anchorLocKey)) {
+        dbg("marker:skip-anchor-dup", { anchorKey: anchor.dataset.wacAnchorKey, locKey, rangeKey, candidate, idx });
+        return;
+      }
+      const anchorKey = anchor.dataset.wacAnchorKey || `anchor-${Math.random().toString(36).slice(2)}`;
+      anchor.dataset.wacAnchorKey = anchorKey;
+      anchorLocSeen.add(anchorLocKey);
+      const marker = createMarker(candidate.location, anchor);
+      if (!marker) {
+        dbg("marker:skip-no-match", candidate);
+        return;
+      }
+      marker.dataset.wacKey = dedupeKey;
+      // Pass 1: all locations => red
+      marker.classList.add("wac-marker-loc");
+
+      // If no date range, stop here (location-only)
+      if (!candidate.dateRange) return;
+
+      // Pass 2: locations with date range => blue initially
+      marker.classList.remove("wac-marker-loc", "wac-marker-art");
+      marker.classList.add("wac-marker-noart");
+
+      const tooltip = createTooltipShell();
+      let hideTimer = null;
+      updateTooltipContent(tooltip, { state: "loading" });
+
+      fetchArtworks(candidate)
+        .then((artworks) => {
+          dbg("candidate:artworks", candidate, artworks?.length);
+          if (artworks && artworks.length > 0) {
+            // Pass 3: has art => yellow
+            marker.classList.remove("wac-marker-noart", "wac-marker-loc");
+            marker.classList.add("wac-marker-art");
+            const [first] = artworks;
+            const captionBits = [
+              candidate.location
+                ? `${candidate.location}${candidate.dateRange ? `, ${formatRange(candidate.dateRange)}` : ""}`
+                : null,
+              first.location || first.source || null
+            ].filter(Boolean);
+            updateTooltipContent(tooltip, {
+              image: first.thumb,
+              title: first.title || "Artwork",
+              caption: captionBits.join(" • ") || "Related art",
+              onShowMore: () => {
+                const baseUrl = EXT && EXT.runtime && EXT.runtime.getURL ? EXT.runtime.getURL("gallery.html") : "gallery.html";
+                const url = new URL(baseUrl, window.location.href);
+                if (candidate.location) url.searchParams.set("location", candidate.location);
+                if (candidate.dateRange?.start != null) url.searchParams.set("startYear", String(candidate.dateRange.start));
+                if (candidate.dateRange?.end != null) url.searchParams.set("endYear", String(candidate.dateRange.end));
+                window.open(url.toString(), "_blank");
+              }
+            });
+          } else {
+            // stays blue
+            updateTooltipContent(tooltip, { state: "error" });
+          }
+        })
+        .catch((err) => {
+          dbg("candidate:fetch-error", err);
+          // stays blue
+          updateTooltipContent(tooltip, { state: "error" });
+        });
+
+      const show = () => {
+        if (hideTimer) {
+          clearTimeout(hideTimer);
+          hideTimer = null;
+        }
+        dbg("marker:hover", candidate);
+        positionTooltip(marker, tooltip);
+        tooltip.classList.add("wac-visible");
+      };
+
+      const hide = () => {
+        hideTimer = setTimeout(() => {
+          tooltip.classList.remove("wac-visible");
+          hideTimer = null;
+        }, HIDE_DELAY_MS);
+      };
+
+      marker.addEventListener("mouseenter", show);
+      marker.addEventListener("mouseleave", hide);
+      tooltip.addEventListener("mouseenter", show);
+      tooltip.addEventListener("mouseleave", hide);
+    });
+  }
+}
 // Defer to idle to reduce impact on page load
 if (document.readyState === "complete" || document.readyState === "interactive") {
   init();

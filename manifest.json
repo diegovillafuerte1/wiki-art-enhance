@@ -41,6 +41,7 @@
       "js": [
         "lib/browser-polyfill.js",
         "lib/compromise.min.js",
+        "lib/chrono.min.js",
         "lib/compromise-dates.min.js",
         "nlpExtractor.js",
         "llmClient.js",
@@ -53,6 +54,12 @@
       "run_at": "document_idle"
     }
   ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": [
+      "background.js"
+    ]
+  },
   "web_accessible_resources": [
     {
       "resources": [
