@@ -98,6 +98,22 @@ ${bodyText.slice(0, 5000)}
   }
 }
 
+async function extractWithNLP() {
+  if (!window.WACNlp || typeof window.WACNlp.extractCandidates !== "function") {
+    return [];
+  }
+  try {
+    const candidates = window.WACNlp.extractCandidates({
+      text: document.body?.innerText?.slice(0, CONTEXT_SCAN_LIMIT)
+    });
+    dbg("nlp:candidates", candidates);
+    return Array.isArray(candidates) ? candidates : [];
+  } catch (e) {
+    dbg("nlp:error", e);
+    return [];
+  }
+}
+
 function dedupeCandidates(list) {
   const seen = new Set();
   const out = [];
@@ -245,18 +261,27 @@ async function init() {
   document.querySelectorAll(".wac-marker, .wac-tooltip").forEach((el) => el.remove());
 
   const heuristic = extractArticleContext();
+  const nlpCandidates = await extractWithNLP();
   dbg("init:context", heuristic);
 
   let candidates = [];
   try {
     const llmCandidates = await extractWithLLM();
-    candidates = dedupeCandidates([
-      ...llmCandidates,
-      heuristic
-    ].filter(Boolean));
+    candidates = dedupeCandidates(
+      [
+        ...llmCandidates,
+        ...nlpCandidates,
+        heuristic
+      ].filter(Boolean)
+    );
   } catch (e) {
     dbg("init:llm-error", e);
-    candidates = [heuristic];
+    candidates = dedupeCandidates(
+      [
+        ...nlpCandidates,
+        heuristic
+      ].filter(Boolean)
+    );
   }
 
   // filter out empties

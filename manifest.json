@@ -40,6 +40,9 @@
       ],
       "js": [
         "lib/browser-polyfill.js",
+        "lib/compromise.min.js",
+        "lib/compromise-dates.min.js",
+        "nlpExtractor.js",
         "llmClient.js",
         "dataProviders.js",
         "contentScript.js"
