@@ -336,7 +336,7 @@ async function init() {
   const paragraphs = [];
   let consumed = 0;
   for (const p of Array.from(document.querySelectorAll("p"))) {
-    const text = p.innerText || "";
+    const text = p.textContent || "";
     if (consumed >= CONTEXT_SCAN_LIMIT) break;
     paragraphs.push(p);
     consumed += text.length;
@@ -392,7 +392,7 @@ function wrapAtIndex(anchor, start, length) {
 }
 
   paragraphs.forEach((p) => {
-    const text = p.innerText || "";
+    const text = p.textContent || "";
     const locs = nlp(text).places().out("array");
     dbg("debug:places", { text: text.slice(0, 80) + (text.length > 80 ? "..." : ""), locs });
     // Build positions map to avoid reusing the same occurrence
@@ -416,8 +416,13 @@ function wrapAtIndex(anchor, start, length) {
 
     positionsByLoc.forEach((positions, key) => {
       positions.forEach((startPos) => {
+        // Extend highlight to the end of the word to avoid partial-word marking (e.g., "Europe" in "European").
+        let end = startPos + key.length;
+        while (end < text.length && /[A-Za-z]/.test(text[end])) end++;
+        const markerLen = end - startPos;
+
         const range = detectRange(text.slice(0, startPos));
-        const marker = wrapAtIndex(p, startPos, key.length);
+        const marker = wrapAtIndex(p, startPos, markerLen);
         if (!marker) return;
         marker.dataset.wacKey = `${key}-${range ? `${range.start}-${range.end}` : "noloc"}`;
         marker.classList.add("wac-marker-loc"); // red by default
