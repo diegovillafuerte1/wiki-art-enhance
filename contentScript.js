@@ -42,6 +42,46 @@ function formatRange(range) {
 const EXT = typeof browser !== "undefined" ? browser : chrome;
 const DEBUG = true;
 
+let nlpRef = null;
+let nlpPromise = null;
+
+async function loadNlp() {
+  if (nlpRef) return nlpRef;
+  const g = typeof globalThis !== "undefined" ? globalThis : window;
+  nlpRef = window.WACNlp || g?.nlp || null;
+
+  // Debug what we have
+  if (DEBUG) {
+    const probe = nlpRef && typeof nlpRef === "function" ? nlpRef("test") : null;
+    dbg("nlp:load-state", {
+      hasWac: !!window.WACNlp,
+      hasNlp: !!window.nlp,
+      hasRef: !!nlpRef,
+      hasDatesFn: !!(probe && typeof probe.dates === "function"),
+      hasDatesGlobal: !!window.compromiseDates,
+      hasDatesGlobalThis: !!(g && g.compromiseDates)
+    });
+  }
+
+  // If we have an nlp instance but no dates() plugin, try extending with global compromiseDates
+  if (nlpRef && typeof nlpRef === "function") {
+    const probe = nlpRef("test");
+    const hasDates = probe && typeof probe.dates === "function";
+    if (!hasDates && window.compromiseDates && typeof nlpRef.extend === "function") {
+      try {
+        nlpRef.extend(window.compromiseDates);
+        const afterProbe = nlpRef("test");
+        if (DEBUG) dbg("nlp:extended-dates", { dates: typeof afterProbe?.dates });
+      } catch (e) {
+        if (DEBUG) dbg("nlp:extend-dates-error", e);
+      }
+    }
+  }
+
+  if (!nlpRef && DEBUG) dbg("nlp:missing WACNlp; ensure nlpClient.js ran");
+  return nlpRef;
+}
+
 function dbg(...args) {
   if (!DEBUG) return;
   try {
@@ -182,20 +222,23 @@ function addNewCandidates(existing, incoming) {
 }
 
 function fetchArtworks({ location, dateRange }) {
-  const year = midYearFromRange(dateRange);
   const providers = window.WACProviders || {};
-  dbg("fetch:start", { location, year, providers: Object.keys(providers || {}) });
+  dbg("fetch:start", {
+    location,
+    dateRange,
+    providers: Object.keys(providers || {})
+  });
   if (providers.fetchRelatedArtworks) {
     return providers.fetchRelatedArtworks({
       location,
-      year,
+      dateRange,
       limitPerProvider: TOOLTIP_RESULTS_LIMIT
     });
   }
   if (providers.fetchMetArtworks) {
     return providers.fetchMetArtworks({
       location,
-      year,
+      dateRange,
       limit: TOOLTIP_RESULTS_LIMIT
     });
   }
@@ -325,6 +368,7 @@ function positionTooltip(marker, tooltip) {
 
 async function init() {
   dbg("init:start");
+  nlpRef = await loadNlp();
   // Cleanup any prior injected markers/tooltips to avoid leftovers
   document.querySelectorAll(".wac-marker, .wac-tooltip").forEach((el) => el.remove());
 
@@ -346,21 +390,101 @@ async function init() {
 
   dbg("debug:paragraph-count", paragraphs.length);
 
+  // nlp is now bundled/extended via nlpClient
+
   const detectRange = (text) => {
-    // year range 1900-1933
-    const range = text.match(/(1[0-9]{3}|20[0-9]{2})\s*[-–]\s*(1[0-9]{3}|20[0-9]{2})/);
-    if (range) return { start: parseInt(range[1], 10), end: parseInt(range[2], 10) };
-    const single = text.match(/(1[0-9]{3}|20[0-9]{2})/);
-    if (single) {
-      const y = parseInt(single[1], 10);
-      return { start: y, end: y };
+    if (!text) return null;
+    const normText = text.replace(/[–—]/g, "-").trim();
+    const extractYear = (val) => {
+      if (val == null) return null;
+      if (typeof val === "number") return val;
+      if (typeof val === "string") {
+        const m = val.match(/-?\d{1,4}/);
+        return m ? parseInt(m[0], 10) : null;
+      }
+      if (typeof val === "object") {
+        if (val.year != null) return val.year;
+        if (val.start != null) return extractYear(val.start);
+        if (val.end != null) return extractYear(val.end);
+        if (val.date != null) return extractYear(val.date);
+      }
+      return null;
+    };
+    const normalizeRange = (start, end) => {
+      if (start == null && end == null) return null;
+      const s = start ?? end;
+      const e = end ?? start;
+      if (s == null && e == null) return null;
+      return { start: Math.min(s, e), end: Math.max(s, e) };
+    };
+    const pickFirst = (list) => {
+      if (!list.length) return null;
+      return list.sort((a, b) => (a.start ?? a.end) - (b.start ?? b.end))[0];
+    };
+
+    // First: compromise dates (with dates plugin)
+    try {
+      if (nlpRef) {
+        const doc = nlpRef(normText);
+        if (typeof doc?.dates === "function") {
+          const datesDoc = doc.dates();
+          const json = typeof datesDoc.json === "function" ? datesDoc.json() : [];
+          const ranges = [];
+          json.forEach((d) => {
+            const meta = d?.dates
+              ? Array.isArray(d.dates)
+                ? d.dates[0] || {}
+                : d.dates
+              : {};
+            const start = extractYear(meta.start) ?? extractYear(meta);
+            const end = extractYear(meta.end) ?? start;
+            const r = normalizeRange(start, end);
+            if (r) ranges.push(r);
+          });
+          if (DEBUG) dbg("detectRange:compromise", {
+            count: json.length,
+            first: json[0]?.text,
+            sampleMeta: json[0]?.dates,
+          ranges,
+          json,
+          text: normText
+          });
+          const picked = pickFirst(ranges);
+          if (picked) return picked;
+        } else if (DEBUG) {
+          dbg("detectRange:compromise", { skip: "nlp.dates missing", text: normText });
+        }
+      } else if (DEBUG) {
+        dbg("detectRange:compromise", { skip: "nlp missing", text: normText });
+      }
+    } catch (e) {
+      if (DEBUG) dbg("detectRange:compromise", { error: e?.message || e, text: normText });
     }
-    const century = text.match(/\b(\d{1,2})(st|nd|rd|th)?\s+centur(?:y|ies)\b/i);
-    if (century) {
-      const c = parseInt(century[1], 10);
-      const base = (c - 1) * 100;
-      return { start: base, end: base + 99 };
+
+    // Second: chrono (supports ranges, decades, relative phrases)
+    try {
+      if (typeof chrono !== "undefined" && typeof chrono.parse === "function") {
+        const results = chrono.parse(normText) || [];
+        const ranges = [];
+        results.forEach((res) => {
+          const start = res.start?.get("year");
+          const end = res.end?.get("year") ?? start;
+          const r = normalizeRange(start, end);
+          if (r) ranges.push(r);
+        });
+        if (DEBUG) dbg("detectRange:chrono", {
+          count: results.length,
+          first: results[0]?.text,
+          text: normText
+        });
+        const picked = pickFirst(ranges);
+        if (picked) return picked;
+      }
+    } catch (_) {
+      // ignore chrono errors
     }
+
+    // No date/range detected
     return null;
   };
 
@@ -393,7 +517,7 @@ function wrapAtIndex(anchor, start, length) {
 
   paragraphs.forEach((p) => {
     const text = p.textContent || "";
-    const locs = nlp(text).places().out("array");
+    const locs = nlpRef ? nlpRef(text).places().out("array") : [];
     dbg("debug:places", { text: text.slice(0, 80) + (text.length > 80 ? "..." : ""), locs });
     // Build positions map to avoid reusing the same occurrence
     const lower = text.toLowerCase();
@@ -416,12 +540,16 @@ function wrapAtIndex(anchor, start, length) {
 
     positionsByLoc.forEach((positions, key) => {
       positions.forEach((startPos) => {
+        const contextStart = Math.max(0, startPos - 80);
+        const contextEnd = Math.min(text.length, startPos + 80);
+        const sentence = text.slice(contextStart, contextEnd);
         // Extend highlight to the end of the word to avoid partial-word marking (e.g., "Europe" in "European").
         let end = startPos + key.length;
         while (end < text.length && /[A-Za-z]/.test(text[end])) end++;
         const markerLen = end - startPos;
 
         const range = detectRange(text.slice(0, startPos));
+        if (DEBUG) dbg("marker:range-eval", { location: key, startPos, range, sentence });
         const marker = wrapAtIndex(p, startPos, markerLen);
         if (!marker) return;
         marker.dataset.wacKey = `${key}-${range ? `${range.start}-${range.end}` : "noloc"}`;

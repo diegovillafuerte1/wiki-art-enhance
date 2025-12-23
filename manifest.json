@@ -45,6 +45,7 @@
         "lib/compromise-dates.min.js",
         "nlpExtractor.js",
         "llmClient.js",
+        "nlpClient.js",
         "dataProviders.js",
         "contentScript.js"
       ],
@@ -70,7 +71,7 @@
         "icons/*"
       ],
       "matches": [
-        "https://*.wikipedia.org/*"
+        "<all_urls>"
       ]
     }
   ]

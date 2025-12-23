@@ -45,8 +45,10 @@ function bgJson(url) {
 
 let europeanaApiKeyPromise = null;
 
-function makeCacheKey({ location, year, limit }) {
-  return `${location || ""}|${year || ""}|${limit || ""}`;
+function makeCacheKey({ location, range, limit }) {
+  const start = range?.start ?? "";
+  const end = range?.end ?? "";
+  return `${location || ""}|${start}-${end}|${limit || ""}`;
 }
 
 function normalizeLocation(raw) {
@@ -133,8 +135,11 @@ async function getEuropeanaApiKey() {
   return europeanaApiKeyPromise;
 }
 
-async function fetchMetArtworks({ location, year, limit = PROVIDER_DEFAULT_LIMIT }) {
-  const key = makeCacheKey({ location, year, limit });
+async function fetchMetArtworks({ location, dateRange, limit = PROVIDER_DEFAULT_LIMIT }) {
+  if (!dateRange || (dateRange.start == null && dateRange.end == null)) {
+    throw new Error("Met search requires a date range");
+  }
+  const key = makeCacheKey({ location, range: dateRange, limit });
   const now = Date.now();
   const cached = metCache.get(key);
   if (cached?.data && cached.ts + PROVIDER_CACHE_TTL_MS > now) {
@@ -143,8 +148,10 @@ async function fetchMetArtworks({ location, year, limit = PROVIDER_DEFAULT_LIMIT
   if (cached?.promise) return cached.promise;
 
   const promise = (async () => {
-    const dateBegin = year ? year - PROVIDER_YEAR_PADDING : 0;
-    const dateEnd = year ? year + PROVIDER_YEAR_PADDING : 2100;
+    const start = dateRange.start ?? dateRange.end;
+    const end = dateRange.end ?? dateRange.start;
+    const dateBegin = (start ?? 0) - PROVIDER_YEAR_PADDING;
+    const dateEnd = (end ?? start ?? 0) + PROVIDER_YEAR_PADDING;
     const query = encodeURIComponent(location || "");
     const searchUrl = `https://collectionapi.metmuseum.org/public/collection/v1/search?hasImages=true&q=${query}&dateBegin=${dateBegin}&dateEnd=${dateEnd}`;
     const searchData = await bgJson(searchUrl);
@@ -174,17 +181,17 @@ async function fetchMetArtworks({ location, year, limit = PROVIDER_DEFAULT_LIMIT
   }
 }
 
-async function fetchEuropeanaArtworks({ location, year, limit = PROVIDER_DEFAULT_LIMIT }) {
+async function fetchEuropeanaArtworks({ location, dateRange, limit = PROVIDER_DEFAULT_LIMIT }) {
   const apiKey = await getEuropeanaApiKey();
   if (!apiKey) {
     if (PROVIDER_DEBUG) console.warn("[WAC][EU] Missing Europeana API key");
     return [];
   }
-  if (year == null) {
-    throw new Error("Europeana search requires a year");
+  if (!dateRange || (dateRange.start == null && dateRange.end == null)) {
+    throw new Error("Europeana search requires a date range");
   }
 
-  const key = makeCacheKey({ location, year, limit });
+  const key = makeCacheKey({ location, range: dateRange, limit });
   const now = Date.now();
   const cached = europeanaCache.get(key);
   if (cached?.data && cached.ts + PROVIDER_CACHE_TTL_MS > now) {
@@ -194,11 +201,12 @@ async function fetchEuropeanaArtworks({ location, year, limit = PROVIDER_DEFAULT
 
   const promise = (async () => {
     const cleanLocation = normalizeLocation(location);
-    const yearQuery = year != null
-      ? `YEAR:[${Math.max(0, year - PROVIDER_YEAR_PADDING)} TO ${year + PROVIDER_YEAR_PADDING}]`
-      : null;
-    if (!yearQuery) throw new Error("Europeana search requires a year");
-    const baseQuery = yearQuery;
+    const start = dateRange.start ?? dateRange.end;
+    const end = dateRange.end ?? dateRange.start;
+    const paddedStart = (start ?? 0) - PROVIDER_YEAR_PADDING;
+    const paddedEnd = (end ?? start ?? 0) + PROVIDER_YEAR_PADDING;
+    const rangeQuery = `YEAR:[${paddedStart} TO ${paddedEnd}]`;
+    const baseQuery = rangeQuery;
 
     const buildUrl = ({ useSpatial, useYearFilters }) => {
       const url = new URL("https://api.europeana.eu/record/v2/search.json");
@@ -211,8 +219,8 @@ async function fetchEuropeanaArtworks({ location, year, limit = PROVIDER_DEFAULT
       if (useSpatial && cleanLocation && isLikelyPlace(cleanLocation)) {
         url.searchParams.append("qf", `spatial:${cleanLocation}`);
       }
-      if (useYearFilters && yearQuery) {
-        url.searchParams.append("qf", yearQuery);
+      if (useYearFilters && rangeQuery) {
+        url.searchParams.append("qf", rangeQuery);
       }
       return url.toString();
     };
@@ -253,10 +261,10 @@ async function fetchEuropeanaArtworks({ location, year, limit = PROVIDER_DEFAULT
   }
 }
 
-async function fetchRelatedArtworks({ location, year, limitPerProvider = PROVIDER_DEFAULT_LIMIT }) {
+async function fetchRelatedArtworks({ location, dateRange, limitPerProvider = PROVIDER_DEFAULT_LIMIT }) {
   const [metRes, euRes] = await Promise.allSettled([
-    fetchMetArtworks({ location, year, limit: limitPerProvider }),
-    fetchEuropeanaArtworks({ location, year, limit: limitPerProvider })
+    fetchMetArtworks({ location, dateRange, limit: limitPerProvider }),
+    fetchEuropeanaArtworks({ location, dateRange, limit: limitPerProvider })
   ]);
 
   const results = [];
